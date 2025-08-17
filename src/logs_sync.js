@@ -1,7 +1,3 @@
-/**
- * logs_sync.gs - Functions to sync records from Logs sheet to monthly/stock sheets
- */
-
 function syncLogsToSheets() {
   try {
     const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
@@ -23,7 +19,6 @@ function syncLogsToSheets() {
     const headers = values[0];
     const records = values.slice(1);
     
-    // Find column indices
     const datetimeIndex = headers.indexOf('Datetime');
     const rawTextIndex = headers.indexOf('Raw Text');
     const sourceAppIndex = headers.indexOf('Source App');
@@ -34,20 +29,18 @@ function syncLogsToSheets() {
     
     let syncedCount = 0;
     const syncedRows = [];
-    const modifiedSheets = new Set(); // Track which sheets got new data
+    const modifiedSheets = new Set();
     
     records.forEach((record, index) => {
-      const rowNumber = index + 2; // +2 because we skipped header and arrays are 0-indexed
+      const rowNumber = index + 2;
       
       const synced = record[syncedIndex];
       const type = record[typeIndex];
       
-      // Skip already synced records
       if (synced === 'Yes') {
         return;
       }
       
-      // Only sync transaction and stock_trading types
       if (type !== 'transaction' && type !== 'stock_trading') {
         console.log(`Skipping ${type} record (row ${rowNumber})`);
         return;
@@ -75,12 +68,10 @@ function syncLogsToSheets() {
       }
     });
     
-    // Mark synced records
     if (syncedRows.length > 0) {
       markLogsRecordsAsSynced(logsSheet, syncedRows);
     }
     
-    // Sort only the modified monthly sheets by date
     if (modifiedSheets.size > 0) {
       sortSpecificSheets(modifiedSheets);
     }
@@ -93,11 +84,8 @@ function syncLogsToSheets() {
 }
 
 function syncTransactionToMonthlySheet(datetime, llmResponse) {
-  // Determine target monthly sheet based on datetime
   const entryDate = new Date(datetime);
   const targetSheet = getOrCreateMonthlySheet(entryDate);
-  
-  // Extract transaction details from LLM response
   const transactionData = {
     datetime: llmResponse.datetime || datetime,
     category: llmResponse.category || 'Other',
@@ -108,7 +96,6 @@ function syncTransactionToMonthlySheet(datetime, llmResponse) {
     rawText: llmResponse.rawText || 'From Logs'
   };
   
-  // Add to monthly sheet
   targetSheet.appendRow([
     transactionData.datetime,
     transactionData.category,
@@ -119,7 +106,6 @@ function syncTransactionToMonthlySheet(datetime, llmResponse) {
     transactionData.rawText
   ]);
   
-  // Apply formatting to the Amount column
   const lastRow = targetSheet.getLastRow();
   const amountCell = targetSheet.getRange(lastRow, 5);
   amountCell.setNumberFormat('+#,##0.00;#,##0.00;#,##0.00');
@@ -140,15 +126,14 @@ function syncStockTradeToSheet(llmResponse) {
       llmResponse.shares,
       llmResponse.price,
       totalValue,
-      '', // Placeholder for Current Price
-      '', // Placeholder for Current Value
+      '',
+      '',
       llmResponse.rawText || 'From Logs'
     ]);
   }
 }
 
 function markLogsRecordsAsSynced(logsSheet, syncedRows) {
-  // Mark each synced row in the Synced column (column H = 8)
   syncedRows.forEach(rowNumber => {
     logsSheet.getRange(rowNumber, 8).setValue('Yes');
   });
@@ -157,7 +142,6 @@ function markLogsRecordsAsSynced(logsSheet, syncedRows) {
 }
 
 function manualSyncLogs() {
-  // Convenience function to manually trigger sync
   console.log('Starting manual sync from Logs to sheets...');
   syncLogsToSheets();
 }

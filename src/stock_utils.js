@@ -1,7 +1,3 @@
-/**
- * stock_utils.gs - Utilities for fetching stock prices and updating the portfolio summary.
- */
-
 const FMP_API_KEY = getSecret('FMP_API_KEY');
 const FMP_API_URL = getSecret('FMP_API_URL');
 
@@ -48,7 +44,7 @@ function updateCurrentStockPrices() {
   }
 
   const updatedValues = values.map((row, i) => {
-    if (i === 0) return row; // Skip header
+    if (i === 0) return row;
     const ticker = row[tickerIndex];
     if (prices[ticker]) {
       const currentPrice = prices[ticker];
@@ -148,19 +144,16 @@ function updateHoldingsSummary() {
     const dataRange = summarySheet.getRange(2, 1, summaryData.length, summaryHeaders.length);
     dataRange.setValues(summaryData);
     
-    // Formatting
-    summarySheet.getRange(2, 3, summaryData.length, 2).setNumberFormat('$#,##0.00'); // Avg Price, Current Price
-    summarySheet.getRange(2, 5, summaryData.length, 1).setNumberFormat('0.00%'); // P/L %
-
-    // Conditional Formatting for P/L %
+    summarySheet.getRange(2, 3, summaryData.length, 2).setNumberFormat('$#,##0.00');
+    summarySheet.getRange(2, 5, summaryData.length, 1).setNumberFormat('0.00%');
     const ruleGreen = SpreadsheetApp.newConditionalFormatRule()
       .whenNumberGreaterThan(0)
-      .setBackground("#d9ead3") // light green
+      .setBackground("#d9ead3")
       .setRanges([summarySheet.getRange(2, 5, summaryData.length, 1)])
       .build();
     const ruleRed = SpreadsheetApp.newConditionalFormatRule()
       .whenNumberLessThan(0)
-      .setBackground("#f4cccc") // light red
+      .setBackground("#f4cccc")
       .setRanges([summarySheet.getRange(2, 5, summaryData.length, 1)])
       .build();
       

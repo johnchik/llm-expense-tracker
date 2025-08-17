@@ -1,26 +1,30 @@
-/**
- * Code.gs - Main application logic for Google Sheets transaction tracking
- */
-
 const SHEET_ID = getSecret('SHEET_ID');
+
+const CONFIG = {
+  DUPLICATE_INDEX_MAX_ENTRIES: 1000,
+  GMAIL_GROUPED_NOTIFICATION_ID: 0,
+  ALLOWED_ZERO_ID_APP: 'ZA Bank',
+  DUPLICATE_CHECK_LIMIT: 200
+};
 
 function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
     
-    // Handle new batch notification format
     if (data.notifications && Array.isArray(data.notifications)) {
       return processBatchNotifications(data.notifications);
     } else {
-      // Legacy format - single notification (for backward compatibility)
-      return processLegacySingleNotification(data);
+      return ContentService.createTextOutput(JSON.stringify({
+        type: 'error',
+        message: 'Invalid request format. Expected notifications array.'
+      })).setMimeType(ContentService.MimeType.JSON);
     }
     
   } catch (error) {
     console.error('Error in doPost:', error);
     return ContentService.createTextOutput(JSON.stringify({
       type: 'error',
-      message: error.toString()
+      message: 'Failed to process request'
     })).setMimeType(ContentService.MimeType.JSON);
   }
 }
@@ -29,6 +33,8 @@ function processBatchNotifications(notifications) {
   const logsSheet = getOrCreateLogsSheet();
   const processedCount = { new: 0, duplicates: 0, errors: 0 };
   const results = [];
+  const rowsToAdd = [];
+  const duplicateEntries = [];
   
   console.log(`Processing batch of ${notifications.length} notifications`);
   
@@ -36,11 +42,15 @@ function processBatchNotifications(notifications) {
     try {
       const { _id, app, title, text, timestamp } = notification;
       
-      // Skip Gmail grouped notifications
-      if (_id == 0 && app !== 'ZA Bank') {
+      if (!app || !text || timestamp === undefined) {
+        console.log(`Skipping invalid notification: missing required fields`);
+        processedCount.errors++;
         continue;
       }
-      // Check for duplicates using composite key
+      
+      if (_id == CONFIG.GMAIL_GROUPED_NOTIFICATION_ID && app !== CONFIG.ALLOWED_ZERO_ID_APP) {
+        continue;
+      }
       const duplicateKey = createDuplicateKey(_id, app, text);
       if (isDuplicateInLogs(logsSheet, duplicateKey)) {
         console.log(`Duplicate notification skipped: ${_id}`);
@@ -48,24 +58,21 @@ function processBatchNotifications(notifications) {
         continue;
       }
       
-      // Classify with LLM
       const formattedDatetime = formatDate(new Date(timestamp)); // Convert Unix to Date
       const llmResult = classifyAndParseLLM(text, title, app, formattedDatetime);
       
-      // Store in Logs sheet
-      logsSheet.appendRow([
-        formattedDatetime,    // Datetime
-        title,                // Title
-        text,                 // Raw Text
-        app,                  // Source App
-        _id,                  // Notification ID
-        llmResult.type,       // Type
-        JSON.stringify(llmResult), // LLM Response
-        'No'                  // Synced
+      rowsToAdd.push([
+        formattedDatetime,
+        title,
+        text,
+        app,
+        _id,
+        llmResult.type,
+        JSON.stringify(llmResult),
+        'No'
       ]);
       
-      // Add to duplicate index to prevent future duplicates
-      addToDuplicateIndex(duplicateKey, _id, app);
+      duplicateEntries.push([duplicateKey, _id, app, formattedDatetime]);
       
       results.push({
         id: _id,
@@ -81,23 +88,30 @@ function processBatchNotifications(notifications) {
       results.push({
         id: notification._id,
         status: 'error',
-        message: error.toString()
+        message: 'Processing failed'
       });
     }
   }
   
-  // Log detailed statistics
+  if (rowsToAdd.length > 0) {
+    const startRow = logsSheet.getLastRow() + 1;
+    logsSheet.getRange(startRow, 1, rowsToAdd.length, 8).setValues(rowsToAdd);
+  }
+  
   const duplicateIndexSheet = getOrCreateDuplicateIndexSheet();
-  const totalIndexEntries = duplicateIndexSheet.getLastRow() - 1; // Subtract header
+  if (duplicateEntries.length > 0) {
+    const startRow = duplicateIndexSheet.getLastRow() + 1;
+    duplicateIndexSheet.getRange(startRow, 1, duplicateEntries.length, 4).setValues(duplicateEntries);
+  }
+  
+  const totalIndexEntries = duplicateIndexSheet.getLastRow() - 1;
   console.log(`Batch processed: ${processedCount.new} new, ${processedCount.duplicates} duplicates, ${processedCount.errors} errors`);
   console.log(`Duplicate index now contains ${totalIndexEntries} entries`);
   
-  // Clean up duplicate index to prevent it from growing too large
   if (processedCount.new > 0) {
     cleanupDuplicateIndex();
   }
   
-  // Auto-sync new records to appropriate sheets
   if (processedCount.new > 0) {
     console.log('Auto-syncing new records to monthly/stock sheets...');
     syncLogsToSheets();
@@ -112,48 +126,6 @@ function processBatchNotifications(notifications) {
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
-function processLegacySingleNotification(data) {
-  // Keep original single notification logic for backward compatibility
-  const result = classifyAndParseLLM(data.text, data.title, data.fromApp, data.timestamp);
-  
-  if (result.type === 'transaction') {
-    const sheet = getOrCreateMonthlySheet();
-    const isDuplicate = checkForDuplicate(sheet, result);
-    
-    if (isDuplicate) {
-      return ContentService.createTextOutput(JSON.stringify({
-        type: 'duplicate',
-        message: 'Transaction already recorded'
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    sheet.appendRow([
-      result.datetime, result.category, result.description,
-      result.currency, result.amount, result.paymentMethod, result.rawText
-    ]);
-    
-    const lastRow = sheet.getLastRow();
-    const amountCell = sheet.getRange(lastRow, 5);
-    amountCell.setNumberFormat('+#,##0.00;#,##0.00;#,##0.00');
-    
-    return ContentService.createTextOutput(JSON.stringify({
-      type: 'transaction',
-      parsed: result
-    })).setMimeType(ContentService.MimeType.JSON);
-    
-  } else if (result.type === 'stock_trading') {
-    recordStockTrade(result);
-    return ContentService.createTextOutput(JSON.stringify({
-      type: 'stock_trading',
-      parsed: result
-    })).setMimeType(ContentService.MimeType.JSON);
-  } else {
-    return ContentService.createTextOutput(JSON.stringify({
-      type: result.type,
-      message: result.message
-    })).setMimeType(ContentService.MimeType.JSON);
-  }
-}
 
 function recordStockTrade(tradeData) {
   if (tradeData.action === 'Purchase' || tradeData.action === 'Sell') {
@@ -279,67 +251,17 @@ function getOrCreateMonthlySheet(targetDate = null) {
   return sheet;
 }
 
-function checkForDuplicate(sheet, amount, paymentMethod, rawText) {
-  const lastRow = sheet.getLastRow();
-  
-  // If there are no data rows (only header), no duplicates possible
-  if (lastRow <= 1) {
-    return false;
-  }
-  
-  // Check last 5 records (or all records if less than 5)
-  const recordsToCheck = Math.min(5, lastRow - 1); // Subtract 1 for header row
-  const startRow = lastRow - recordsToCheck + 1;
-  
-  // Get the data for the last 5 records
-  // Columns: Datetime(1), Category(2), Description(3), Currency(4), Amount(5), Payment Method(6), Raw Text(7)
-  const range = sheet.getRange(startRow, 1, recordsToCheck, 7);
-  const values = range.getValues();
-  
-  console.log(`Checking for duplicates - Amount: ${amount}, Payment Method: ${paymentMethod}`);
-  console.log(`Checking last ${recordsToCheck} records from row ${startRow} to ${lastRow}`);
-  
-  // Check each record for matching amount and payment method
-  for (let i = 0; i < values.length; i++) {
-    const existingAmount = values[i][4]; // Column E (Amount) - index 4
-    const existingPaymentMethod = values[i][5]; // Column F (Payment Method) - index 5
-    const existingRawText = values[i][6];
-    
-    console.log(`Record ${i + 1}: Amount = ${existingAmount}, Payment Method = ${existingPaymentMethod}`);
-    
-    // Convert amounts to strings for comparison to handle different formats
-    const normalizedNewAmount = normalizeAmount(amount);
-    const normalizedExistingAmount = normalizeAmount(existingAmount);
-    
-    // Check if both amount and payment method match
-    if (normalizedNewAmount === normalizedExistingAmount && 
-        normalizePaymentMethod(paymentMethod) === normalizePaymentMethod(existingPaymentMethod) &&
-        normalizePaymentMethod(rawText) === normalizePaymentMethod(existingRawText)) {
-      console.log(`Duplicate found! Existing: ${existingAmount} ${existingPaymentMethod}, New: ${amount} ${paymentMethod}`);
-      return true;
-    }
-  }
-  
-  console.log('No duplicate found');
-  return false;
-}
 
 function normalizeAmount(amount) {
-  // Convert amount to string and remove any whitespace
   const amountStr = String(amount).trim();
-  
-  // Handle cases where amount might be stored as number or string
-  // Remove any currency symbols and normalize the format
   return amountStr.replace(/[^\d+\-\\.]/g, '');
 }
 
 function normalizePaymentMethod(paymentMethod) {
-  // Convert to string, trim whitespace, and convert to lowercase for case-insensitive comparison
   return String(paymentMethod).trim().toLowerCase();
 }
 
 function normalizeText(text) {
-  // Convert to string, trim whitespace, and convert to lowercase for comparison
   return String(text).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
@@ -396,7 +318,6 @@ function testDoPost() {
 }
 
 function createDuplicateKey(id, app, text) {
-  // Create composite key for duplicate detection
   return `${id}|${app}|${normalizeText(text)}`;
 }
 
@@ -405,16 +326,16 @@ function isDuplicateInLogs(logsSheet, duplicateKey) {
   const lastRow = duplicateIndexSheet.getLastRow();
   
   if (lastRow <= 1) {
-    return false; // No data rows (only header)
+    return false;
   }
   
-  // Get all duplicate keys from the index (column A)
-  const range = duplicateIndexSheet.getRange(2, 1, lastRow - 1, 1);
+  const rowsToCheck = Math.min(CONFIG.DUPLICATE_CHECK_LIMIT, lastRow - 1);
+  const startRow = lastRow - rowsToCheck + 1;
+  const range = duplicateIndexSheet.getRange(startRow, 1, rowsToCheck, 1);
   const values = range.getValues();
   
-  // Check if the duplicate key exists in the index
   for (let i = 0; i < values.length; i++) {
-    const existingKey = values[i][0]; // Duplicate Key (column A)
+    const existingKey = values[i][0];
     if (duplicateKey === existingKey) {
       console.log(`Duplicate found in index: ${duplicateKey}`);
       return true;
@@ -439,17 +360,15 @@ function addToDuplicateIndex(duplicateKey, notificationId, sourceApp) {
   console.log(`Added to duplicate index: ${duplicateKey}`);
 }
 
-function cleanupDuplicateIndex(maxEntries = 1000) {
+function cleanupDuplicateIndex(maxEntries = CONFIG.DUPLICATE_INDEX_MAX_ENTRIES) {
   const duplicateIndexSheet = getOrCreateDuplicateIndexSheet();
   const lastRow = duplicateIndexSheet.getLastRow();
   
   if (lastRow <= maxEntries + 1) {
-    return; // No cleanup needed (header + data rows <= maxEntries + 1)
+    return;
   }
   
-  const excessRows = lastRow - maxEntries - 1; // Subtract 1 for header
-  
-  // Delete the oldest entries (rows 2 to 2+excessRows-1)
+  const excessRows = lastRow - maxEntries - 1;
   duplicateIndexSheet.deleteRows(2, excessRows);
   
   console.log(`Cleaned up DuplicateIndex: removed ${excessRows} old entries, keeping ${maxEntries} latest entries`);

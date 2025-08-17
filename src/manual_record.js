@@ -1,15 +1,9 @@
-/**
- * manual_record.gs - Handles Google Form submissions for manual transaction entries
- */
-
 function onFormSubmit(e) {
   try {
     console.log('Form submitted, processing manual record...');
     
-    // Get the form response values
-    // Expected columns: Timestamp, Category, Description, Currency, Amount, Payment Method
     const responses = e.values;
-    const timestamp = responses[0]; // First column is timestamp
+    const timestamp = responses[0];
     const category = responses[1];
     const description = responses[2];
     const currency = responses[3];
@@ -18,15 +12,11 @@ function onFormSubmit(e) {
     
     console.log(`Manual entry: ${amount} ${currency} at ${timestamp}`);
     
-    // Determine target monthly sheet based on timestamp
     const entryDate = new Date(timestamp);
     const targetSheet = getOrCreateMonthlySheet(entryDate);
     
-    // Format datetime for consistency with other transactions
     const formattedDatetime = formatDate(entryDate);
     
-    // Add transaction to target monthly sheet
-    // Columns: Datetime, Category, Description, Currency, Amount, Payment Method, Raw Text
     targetSheet.appendRow([
       formattedDatetime,
       category,
@@ -34,15 +24,13 @@ function onFormSubmit(e) {
       currency,
       amount,
       paymentMethod,
-      'Manual Record' // Raw Text column
+      'Manual Record'
     ]);
     
-    // Apply formatting to the Amount column for the newly added row
     const lastRow = targetSheet.getLastRow();
-    const amountCell = targetSheet.getRange(lastRow, 5); // Column E
+    const amountCell = targetSheet.getRange(lastRow, 5);
     amountCell.setNumberFormat('+#,##0.00;#,##0.00;#,##0.00');
     
-    // Mark the record as synced in the Manual Record sheet
     const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
     const manualSheet = spreadsheet.getSheetByName('Manual Record');
     markRecordsAsSynced(manualSheet, [e.range.getRow()]);
@@ -75,9 +63,8 @@ function syncManualRecords() {
     }
     
     const headers = values[0];
-    const records = values.slice(1); // Skip header row
+    const records = values.slice(1);
     
-    // Find column indices
     const timestampIndex = headers.indexOf('Timestamp');
     const categoryIndex = headers.indexOf('Category');
     const descriptionIndex = headers.indexOf('Description');
@@ -89,9 +76,7 @@ function syncManualRecords() {
     const syncedRows = [];
     
     records.forEach((record, index) => {
-      const rowNumber = index + 2; // +2 because we skipped header and arrays are 0-indexed
-      
-      // Skip empty rows
+      const rowNumber = index + 2;
       if (!record[timestampIndex]) {
         return;
       }
@@ -103,12 +88,10 @@ function syncManualRecords() {
       const amount = record[amountIndex] || 0;
       const paymentMethod = record[paymentMethodIndex] || '';
       
-      // Determine target monthly sheet
       const entryDate = new Date(timestamp);
       const targetSheet = getOrCreateMonthlySheet(entryDate);
       const formattedDatetime = formatDate(entryDate);
       
-      // Add to target sheet
       targetSheet.appendRow([
         formattedDatetime,
         category,
@@ -119,7 +102,6 @@ function syncManualRecords() {
         'Manual Record'
       ]);
       
-      // Apply formatting to the Amount column
       const lastRow = targetSheet.getLastRow();
       const amountCell = targetSheet.getRange(lastRow, 5);
       amountCell.setNumberFormat('+#,##0.00;#,##0.00;#,##0.00');
@@ -131,12 +113,7 @@ function syncManualRecords() {
       console.log(`Synced record ${rowNumber} to ${targetSheetName}: ${amount} ${currency}`);
     });
     
-    // Mark synced records or clear them
     if (syncedRows.length > 0) {
-      // Option 1: Clear synced rows (recommended)
-      // clearSyncedRecords(manualSheet, syncedRows);
-      
-      // Option 2: Mark as synced (uncomment if preferred)
       markRecordsAsSynced(manualSheet, syncedRows);
     }
     
@@ -148,7 +125,6 @@ function syncManualRecords() {
 }
 
 function clearSyncedRecords(manualSheet, syncedRows) {
-  // Sort in descending order to avoid row number shifts when deleting
   syncedRows.sort((a, b) => b - a);
   
   syncedRows.forEach(rowNumber => {
@@ -159,17 +135,14 @@ function clearSyncedRecords(manualSheet, syncedRows) {
 }
 
 function markRecordsAsSynced(manualSheet, syncedRows) {
-  // Add a "Synced" column if it doesn't exist
   const headers = manualSheet.getRange(1, 1, 1, manualSheet.getLastColumn()).getValues()[0];
   let syncedColumnIndex = headers.indexOf('Synced');
   
   if (syncedColumnIndex === -1) {
-    // Add Synced column
     syncedColumnIndex = headers.length;
     manualSheet.getRange(1, syncedColumnIndex + 1).setValue('Synced');
   }
   
-  // Mark each synced row
   syncedRows.forEach(rowNumber => {
     manualSheet.getRange(rowNumber, syncedColumnIndex + 1).setValue('Yes');
   });
@@ -178,11 +151,7 @@ function markRecordsAsSynced(manualSheet, syncedRows) {
 }
 
 function setupFormTrigger() {
-  // Function to manually set up the form submit trigger
-  // This creates a trigger that fires when the Google Form submits to the spreadsheet
-  
   try {
-    // Delete existing triggers first to avoid duplicates
     const triggers = ScriptApp.getProjectTriggers();
     triggers.forEach(trigger => {
       if (trigger.getHandlerFunction() === 'onFormSubmit') {
@@ -191,7 +160,6 @@ function setupFormTrigger() {
       }
     });
     
-    // Get the spreadsheet and create trigger
     const spreadsheet = SpreadsheetApp.openById(SHEET_ID);
     const trigger = ScriptApp.newTrigger('onFormSubmit')
       .forSpreadsheet(spreadsheet)
@@ -208,7 +176,6 @@ function setupFormTrigger() {
 }
 
 function listExistingTriggers() {
-  // Helper function to see what triggers are already set up
   const triggers = ScriptApp.getProjectTriggers();
   console.log('Existing triggers:');
   triggers.forEach((trigger, index) => {
