@@ -65,19 +65,31 @@ function fetchStockPrices(tickers) {
   }
   
   try {
-    const url = `${FMP_API_URL}${tickers.join(',')}?apikey=${FMP_API_KEY}`;
-    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
-    const data = JSON.parse(response.getContentText());
-    
-    if (response.getResponseCode() !== 200) {
-      console.error('FMP API Error:', data);
-      return null;
-    }
-
     const prices = {};
-    data.forEach(stock => {
-      prices[stock.symbol] = stock.price;
-    });
+    
+    // Free plan requires individual API calls per ticker
+    for (const ticker of tickers) {
+      const url = `${FMP_API_URL}${ticker}&apikey=${FMP_API_KEY}`;
+      const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      
+      if (response.getResponseCode() !== 200) {
+        console.error(`FMP API Error for ${ticker}:`, response.getContentText());
+        continue; // Skip this ticker and continue with others
+      }
+      
+      const data = JSON.parse(response.getContentText());
+      
+      // Handle response array format
+      if (Array.isArray(data) && data.length > 0 && data[0].symbol && data[0].price !== undefined) {
+        prices[data[0].symbol] = data[0].price;
+      } else {
+        console.error(`Invalid response format for ${ticker}:`, data);
+      }
+      
+      // Add small delay to avoid rate limiting
+      Utilities.sleep(100);
+    }
+    
     return prices;
   } catch (e) {
     console.error('Error fetching stock prices:', e);
