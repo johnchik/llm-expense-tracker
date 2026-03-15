@@ -128,7 +128,7 @@ function syncTransactionToMonthlySheet(datetime, llmResponse) {
 function findTransactionRowIndex(sheet, datetime, amount) {
   const data = sheet.getDataRange().getValues();
   for (let i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(datetime) && String(data[i][4]) === String(amount)) {
+    if (String(data[i][0]) === String(datetime) && parseFloat(data[i][4]) === parseFloat(amount)) {
       return i + 1;
     }
   }
