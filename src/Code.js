@@ -85,6 +85,7 @@ function processBatchNotifications(notifications) {
     } catch (error) {
       console.error(`Error processing notification ${notification._id}:`, error);
       processedCount.errors++;
+      sendTelegramNotification(false, null, null, { rawText: notification.text }, error.message);
       results.push({
         id: notification._id,
         status: 'error',
@@ -358,6 +359,57 @@ function addToDuplicateIndex(duplicateKey, notificationId, sourceApp) {
   ]);
   
   console.log(`Added to duplicate index: ${duplicateKey}`);
+}
+
+function sendTelegramNotification(success, sheetName, rowIndex, entry, errorMsg) {
+  const token = getSecret('TELEGRAM_TOKEN');
+  const chatId = getSecret('TELEGRAM_CHAT_ID');
+
+  if (!token || !chatId) {
+    console.warn('TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not configured, skipping notification');
+    return;
+  }
+
+  let payload;
+  if (success) {
+    const text =
+      `✅ *已記錄*\n` +
+      `📅 ${entry.datetime}\n` +
+      `🏷️ ${entry.category}\n` +
+      `📝 ${entry.description}\n` +
+      `💰 ${entry.currency} ${entry.amount}\n` +
+      `💳 ${entry.paymentMethod}`;
+
+    payload = {
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "✅ OK", callback_data: `ok|${sheetName}|${rowIndex}` },
+          { text: "✏️ 編輯", callback_data: `edit|${sheetName}|${rowIndex}` },
+          { text: "🗑️ 刪除", callback_data: `del|${sheetName}|${rowIndex}` }
+        ]]
+      }
+    };
+  } else {
+    payload = {
+      chat_id: chatId,
+      text: `❌ *記錄失敗*\n原因: ${errorMsg}\nRaw: ${entry ? (entry.rawText || '(empty)') : '(empty)'}`,
+      parse_mode: 'Markdown'
+    };
+  }
+
+  try {
+    UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    console.error('Failed to send Telegram notification:', e);
+  }
 }
 
 function cleanupDuplicateIndex(maxEntries = CONFIG.DUPLICATE_INDEX_MAX_ENTRIES) {

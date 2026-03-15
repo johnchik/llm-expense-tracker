@@ -31,51 +31,63 @@ function syncLogsToSheets() {
     const syncedRows = [];
     const modifiedSheets = new Set();
     
+    const syncedTransactions = [];
+
     records.forEach((record, index) => {
       const rowNumber = index + 2;
-      
+
       const synced = record[syncedIndex];
       const type = record[typeIndex];
-      
+
       if (synced === 'Yes') {
         return;
       }
-      
+
       if (type !== 'transaction' && type !== 'stock_trading') {
         console.log(`Skipping ${type} record (row ${rowNumber})`);
         return;
       }
-      
+
       try {
         const llmResponse = JSON.parse(record[llmResponseIndex]);
-        
+
         if (type === 'transaction') {
-          const targetSheet = syncTransactionToMonthlySheet(record[datetimeIndex], llmResponse);
-          modifiedSheets.add(targetSheet.getName());
+          const { sheet, transactionData } = syncTransactionToMonthlySheet(record[datetimeIndex], llmResponse);
+          modifiedSheets.add(sheet.getName());
+          syncedTransactions.push({ sheet, transactionData });
           syncedRows.push(rowNumber);
           syncedCount++;
           console.log(`Synced transaction from row ${rowNumber}`);
-          
+
         } else if (type === 'stock_trading') {
           syncStockTradeToSheet(llmResponse);
           syncedRows.push(rowNumber);
           syncedCount++;
           console.log(`Synced stock trade from row ${rowNumber}`);
         }
-        
+
       } catch (error) {
         console.error(`Error syncing row ${rowNumber}:`, error);
       }
     });
-    
+
     if (syncedRows.length > 0) {
       markLogsRecordsAsSynced(logsSheet, syncedRows);
     }
-    
+
     if (modifiedSheets.size > 0) {
       sortSpecificSheets(modifiedSheets);
     }
-    
+
+    for (const { sheet, transactionData } of syncedTransactions) {
+      const rowIndex = findTransactionRowIndex(sheet, transactionData.datetime, transactionData.amount);
+      if (rowIndex) {
+        sendTelegramNotification(true, sheet.getName(), rowIndex, transactionData, null);
+      } else {
+        console.warn(`Could not find row for transaction: ${transactionData.datetime} ${transactionData.amount}`);
+      }
+    }
+
     console.log(`Sync completed: ${syncedCount} records synced from Logs`);
     
   } catch (error) {
@@ -109,8 +121,18 @@ function syncTransactionToMonthlySheet(datetime, llmResponse) {
   const lastRow = targetSheet.getLastRow();
   const amountCell = targetSheet.getRange(lastRow, 5);
   amountCell.setNumberFormat('+#,##0.00;#,##0.00;#,##0.00');
-  
-  return targetSheet;
+
+  return { sheet: targetSheet, transactionData };
+}
+
+function findTransactionRowIndex(sheet, datetime, amount) {
+  const data = sheet.getDataRange().getValues();
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === String(datetime) && String(data[i][4]) === String(amount)) {
+      return i + 1;
+    }
+  }
+  return null;
 }
 
 function syncStockTradeToSheet(llmResponse) {
