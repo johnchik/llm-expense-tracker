@@ -85,7 +85,7 @@ function processBatchNotifications(notifications) {
     } catch (error) {
       console.error(`Error processing notification ${notification._id}:`, error);
       processedCount.errors++;
-      sendTelegramNotification(false, null, null, { rawText: notification.text }, error.message);
+      try { sendTelegramNotification(false, null, null, { rawText: notification.text }, error.message); } catch (e) { console.error('Telegram notify failed:', e); }
       results.push({
         id: notification._id,
         status: 'error',
@@ -362,8 +362,9 @@ function addToDuplicateIndex(duplicateKey, notificationId, sourceApp) {
 }
 
 function sendTelegramNotification(success, sheetName, rowIndex, entry, errorMsg) {
-  const token = getSecret('TELEGRAM_TOKEN');
-  const chatId = getSecret('TELEGRAM_CHAT_ID');
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty('TELEGRAM_TOKEN');
+  const chatId = props.getProperty('TELEGRAM_CHAT_ID');
 
   if (!token || !chatId) {
     console.warn('TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not configured, skipping notification');
