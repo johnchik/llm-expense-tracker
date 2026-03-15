@@ -299,11 +299,22 @@ function testParsing() {
 
 function testDoPost() {
   // Test with a non-transaction notification
+  // data = {
+  //   text: "你好,你已於2025-07-02 02:42:23 將HKD 594.00轉賬至\"+852-1234***5\".交易類 型:轉數快轉賬。你可查看動態以了解款項入賬 情況。如你沒有遞交以上指示,可致電+8523665 3665",
+  //   title: "你已轉賬HKD 594",
+  //   fromApp: "ZA Bank",
+  //   timestamp: "2025-07-02 02:42:23"
+  // }
   data = {
-    text: "你好,你已於2025-07-02 02:42:23 將HKD 594.00轉賬至\"+852-1234***5\".交易類 型:轉數快轉賬。你可查看動態以了解款項入賬 情況。如你沒有遞交以上指示,可致電+8523665 3665",
-    title: "你已轉賬HKD 594",
-    fromApp: "ZA Bank",
-    timestamp: "2025-07-02 02:42:23"
+    "notifications": [
+      {
+        "_id": "1",
+        "app": "bank",
+        "title": "Money Transfer",
+        "text": "You have paid $35.00 to McDonald's.",
+        "timestamp": "2026-03-15 22:20:00"
+      }
+    ]
   }
 
   const mockPromoEvent = {

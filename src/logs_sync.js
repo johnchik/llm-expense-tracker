@@ -52,9 +52,9 @@ function syncLogsToSheets() {
         const llmResponse = JSON.parse(record[llmResponseIndex]);
 
         if (type === 'transaction') {
-          const { sheet, transactionData } = syncTransactionToMonthlySheet(record[datetimeIndex], llmResponse);
+          const { sheet, transactionData, rowIndex } = syncTransactionToMonthlySheet(record[datetimeIndex], llmResponse);
           modifiedSheets.add(sheet.getName());
-          syncedTransactions.push({ sheet, transactionData });
+          syncedTransactions.push({ sheet, transactionData, rowIndex });
           syncedRows.push(rowNumber);
           syncedCount++;
           console.log(`Synced transaction from row ${rowNumber}`);
@@ -75,17 +75,12 @@ function syncLogsToSheets() {
       markLogsRecordsAsSynced(logsSheet, syncedRows);
     }
 
-    if (modifiedSheets.size > 0) {
-      sortSpecificSheets(modifiedSheets);
+    for (const { sheet, transactionData, rowIndex } of syncedTransactions) {
+      sendTelegramNotification(true, sheet.getName(), rowIndex, transactionData, null);
     }
 
-    for (const { sheet, transactionData } of syncedTransactions) {
-      const rowIndex = findTransactionRowIndex(sheet, transactionData.datetime, transactionData.amount);
-      if (rowIndex) {
-        sendTelegramNotification(true, sheet.getName(), rowIndex, transactionData, null);
-      } else {
-        console.warn(`Could not find row for transaction: ${transactionData.datetime} ${transactionData.amount}`);
-      }
+    if (modifiedSheets.size > 0) {
+      sortSpecificSheets(modifiedSheets);
     }
 
     console.log(`Sync completed: ${syncedCount} records synced from Logs`);
@@ -122,17 +117,7 @@ function syncTransactionToMonthlySheet(datetime, llmResponse) {
   const amountCell = targetSheet.getRange(lastRow, 5);
   amountCell.setNumberFormat('+#,##0.00;#,##0.00;#,##0.00');
 
-  return { sheet: targetSheet, transactionData };
-}
-
-function findTransactionRowIndex(sheet, datetime, amount) {
-  const data = sheet.getDataRange().getValues();
-  for (let i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(datetime) && parseFloat(data[i][4]) === parseFloat(amount)) {
-      return i + 1;
-    }
-  }
-  return null;
+  return { sheet: targetSheet, transactionData, rowIndex: lastRow };
 }
 
 function syncStockTradeToSheet(llmResponse) {
