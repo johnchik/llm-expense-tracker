@@ -58,7 +58,7 @@ function processBatchNotifications(notifications) {
         continue;
       }
       
-      const formattedDatetime = formatDate(new Date(timestamp)); // Convert Unix to Date
+      const formattedDatetime = formatDate(new Date(Number(timestamp)));
       const llmResult = classifyAndParseLLM(text, title, app, formattedDatetime);
       
       rowsToAdd.push([
@@ -312,7 +312,7 @@ function testDoPost() {
         "app": "bank",
         "title": "Money Transfer",
         "text": "You have paid $35.00 to McDonald's.",
-        "timestamp": "2026-03-15 22:20:00"
+        "timestamp": 1773584953317
       }
     ]
   }
