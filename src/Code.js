@@ -4,7 +4,10 @@ const CONFIG = {
   DUPLICATE_INDEX_MAX_ENTRIES: 1000,
   GMAIL_GROUPED_NOTIFICATION_ID: 0,
   ALLOWED_ZERO_ID_APP: 'ZA Bank',
-  DUPLICATE_CHECK_LIMIT: 200
+  DUPLICATE_CHECK_LIMIT: 200,
+  DUPLICATE_LOCK_WAIT_MS: 10000,
+  TELEGRAM_MAX_ATTEMPTS: 3,
+  TELEGRAM_RETRY_SLEEP_MS: 1000
 };
 
 function doPost(e) {
@@ -34,7 +37,6 @@ function processBatchNotifications(notifications) {
   const processedCount = { new: 0, duplicates: 0, errors: 0 };
   const results = [];
   const rowsToAdd = [];
-  const duplicateEntries = [];
   
   console.log(`Processing batch of ${notifications.length} notifications`);
   
@@ -52,7 +54,7 @@ function processBatchNotifications(notifications) {
         continue;
       }
       const duplicateKey = createDuplicateKey(_id, app, text);
-      if (isDuplicateInLogs(logsSheet, duplicateKey)) {
+      if (!reserveDuplicateKey(duplicateKey, _id, app)) {
         console.log(`Duplicate notification skipped: ${_id}`);
         processedCount.duplicates++;
         continue;
@@ -71,8 +73,6 @@ function processBatchNotifications(notifications) {
         JSON.stringify(llmResult),
         'No'
       ]);
-      
-      duplicateEntries.push([duplicateKey, _id, app, formattedDatetime]);
       
       results.push({
         id: _id,
@@ -100,10 +100,6 @@ function processBatchNotifications(notifications) {
   }
   
   const duplicateIndexSheet = getOrCreateDuplicateIndexSheet();
-  if (duplicateEntries.length > 0) {
-    const startRow = duplicateIndexSheet.getLastRow() + 1;
-    duplicateIndexSheet.getRange(startRow, 1, duplicateEntries.length, 4).setValues(duplicateEntries);
-  }
   
   const totalIndexEntries = duplicateIndexSheet.getLastRow() - 1;
   console.log(`Batch processed: ${processedCount.new} new, ${processedCount.duplicates} duplicates, ${processedCount.errors} errors`);
@@ -190,6 +186,7 @@ function getOrCreateLogsSheet() {
     sheet.autoResizeColumns(1, headers.length);
     console.log('Created new Logs sheet');
   }
+  ensureLogsSheetSchema(sheet);
 
   return sheet;
 }
@@ -211,8 +208,31 @@ function getOrCreateDuplicateIndexSheet() {
     sheet.autoResizeColumns(1, headers.length);
     console.log('Created new DuplicateIndex sheet');
   }
+  ensureDuplicateIndexSheetSchema(sheet);
 
   return sheet;
+}
+
+function ensureLogsSheetSchema(sheet) {
+  const requiredHeaders = ['Datetime', 'Title', 'Raw Text', 'Source App', 'Notification ID', 'Type', 'LLM Response', 'Synced', 'Target Sheet', 'Target Row', 'Telegram Status', 'Telegram Error'];
+  ensureSheetHeaders(sheet, requiredHeaders);
+}
+
+function ensureDuplicateIndexSheetSchema(sheet) {
+  const requiredHeaders = ['Duplicate Key', 'Notification ID', 'Source App', 'Processed Date', 'Status'];
+  ensureSheetHeaders(sheet, requiredHeaders);
+}
+
+function ensureSheetHeaders(sheet, requiredHeaders) {
+  const lastColumn = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+
+  requiredHeaders.forEach(header => {
+    if (headers.indexOf(header) === -1) {
+      sheet.getRange(1, sheet.getLastColumn() + 1).setValue(header);
+      headers.push(header);
+    }
+  });
 }
 
 function formatDate(date) {
@@ -358,7 +378,31 @@ function isDuplicateInLogs(logsSheet, duplicateKey) {
   return false;
 }
 
-function addToDuplicateIndex(duplicateKey, notificationId, sourceApp) {
+function reserveDuplicateKey(duplicateKey, notificationId, sourceApp) {
+  const lock = LockService.getScriptLock();
+
+  try {
+    lock.waitLock(CONFIG.DUPLICATE_LOCK_WAIT_MS);
+
+    if (isDuplicateInLogs(null, duplicateKey)) {
+      return false;
+    }
+
+    addToDuplicateIndex(duplicateKey, notificationId, sourceApp, 'Reserved');
+    return true;
+  } catch (error) {
+    console.error('Failed to reserve duplicate key:', error);
+    throw error;
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (error) {
+      console.warn('Duplicate lock was not held when releasing:', error);
+    }
+  }
+}
+
+function addToDuplicateIndex(duplicateKey, notificationId, sourceApp, status = 'Reserved') {
   const duplicateIndexSheet = getOrCreateDuplicateIndexSheet();
   const processedDate = formatDate(new Date());
   
@@ -366,7 +410,8 @@ function addToDuplicateIndex(duplicateKey, notificationId, sourceApp) {
     duplicateKey,
     notificationId,
     sourceApp,
-    processedDate
+    processedDate,
+    status
   ]);
   
   console.log(`Added to duplicate index: ${duplicateKey}`);
@@ -379,13 +424,16 @@ function sendTelegramNotification(success, sheetName, rowIndex, entry, errorMsg)
 
   if (!token || !chatId) {
     console.warn('TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not configured, skipping notification');
-    return;
+    return {
+      ok: false,
+      error: 'TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not configured'
+    };
   }
 
   let payload;
   if (success) {
     const text =
-      `✅ *已記錄*\n` +
+      `✅ 已記錄\n` +
       `📅 ${entry.datetime}\n` +
       `🏷️ ${entry.category}\n` +
       `📝 ${entry.description}\n` +
@@ -395,7 +443,6 @@ function sendTelegramNotification(success, sheetName, rowIndex, entry, errorMsg)
     payload = {
       chat_id: chatId,
       text: text,
-      parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [[
           { text: "✅ OK", callback_data: `ok|${sheetName}|${rowIndex}` },
@@ -407,20 +454,49 @@ function sendTelegramNotification(success, sheetName, rowIndex, entry, errorMsg)
   } else {
     payload = {
       chat_id: chatId,
-      text: `❌ *記錄失敗*\n原因: ${errorMsg}\nRaw: ${entry ? (entry.rawText || '(empty)') : '(empty)'}`,
-      parse_mode: 'Markdown'
+      text: `❌ 記錄失敗\n原因: ${errorMsg}\nRaw: ${entry ? (entry.rawText || '(empty)') : '(empty)'}`
     };
   }
 
-  try {
-    UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-  } catch (e) {
-    console.error('Failed to send Telegram notification:', e);
+  for (let attempt = 1; attempt <= CONFIG.TELEGRAM_MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = UrlFetchApp.fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
+      const statusCode = response.getResponseCode();
+      const responseText = response.getContentText();
+
+      if (statusCode >= 200 && statusCode < 300) {
+        return {
+          ok: true,
+          statusCode: statusCode
+        };
+      }
+
+      console.error(`Telegram notification failed on attempt ${attempt}: HTTP ${statusCode} ${responseText}`);
+
+      if (attempt === CONFIG.TELEGRAM_MAX_ATTEMPTS) {
+        return {
+          ok: false,
+          statusCode: statusCode,
+          error: responseText
+        };
+      }
+    } catch (e) {
+      console.error(`Failed to send Telegram notification on attempt ${attempt}:`, e);
+
+      if (attempt === CONFIG.TELEGRAM_MAX_ATTEMPTS) {
+        return {
+          ok: false,
+          error: e.message
+        };
+      }
+    }
+
+    Utilities.sleep(CONFIG.TELEGRAM_RETRY_SLEEP_MS * attempt);
   }
 }
 
