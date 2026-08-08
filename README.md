@@ -1,53 +1,45 @@
-# Android Phone Notification-Based Money Tracker
+# LLM Expense Tracker - GAS Receiver
 
-Track phone payment notifications automatically with Google Apps Script, an LLM, Google Sheets, and Telegram.
+This Apps Script is intentionally a dumb ingestion endpoint.
 
-When an Android payment app, bank app, wallet, SMS, or email notification arrives, Tasker sends the notification to a Google Apps Script endpoint. The script asks an LLM to classify and extract the transaction, writes the raw and parsed result to Google Sheets, syncs transaction rows into monthly sheets, and sends a Telegram bot confirmation.
+## Responsibilities
 
-## Why this exists
+- Accept Tasker POST requests containing `notifications`.
+- Validate the minimum required fields.
+- Append every valid notification to the `Inbox` sheet with `Status = PENDING`.
+- Do not classify, deduplicate financial transactions, create monthly transactions, call an LLM, or send Telegram messages.
 
-Most day-to-day payments already create phone notifications. This project turns those notifications into accounting records without paid infrastructure.
+## Inbox schema
 
-The free stack is:
+1. Event ID
+2. Received At
+3. Datetime
+4. Title
+5. Raw Text
+6. Source App
+7. Notification ID
+8. Status
+9. Transaction ID
+10. Processed At
+11. Notes
 
-- Android Tasker for notification capture and HTTP POST.
-- Google Apps Script for the webhook and processing code.
-- Google Sheets for storage.
-- GitHub Models or another OpenAI-compatible endpoint for LLM parsing.
-- Telegram Bot API for record confirmations.
+`Event ID` is the stable identifier ChatGPT should use when updating rows.
 
-## Current Reliability Features
+Suggested statuses for the ChatGPT processor:
 
-- Duplicate reservations are written before the LLM call, under an Apps Script lock, so near-simultaneous notifications are less likely to pass the duplicate guard.
-- Each log row tracks whether it was synced to a monthly sheet separately from whether Telegram delivery succeeded.
-- Telegram sends are retried and failed responses are stored in the Logs sheet.
-- Failed Telegram confirmations can be retried by running `retryFailedTelegramNotifications` in Apps Script.
+- `PENDING` - not processed yet
+- `PROCESSED` - source notification used to create a transaction
+- `DUPLICATE` - same financial transaction as another source notification
+- `IGNORED` - not a financial transaction
+- `REVIEW` - uncertain and needs manual review
 
-## Setup
+For cross-channel duplicates, keep all Inbox rows. ChatGPT should link duplicate source rows to the same `Transaction ID` rather than deleting the raw evidence.
 
-Start with [Getting Started](docs/getting-started.md).
+## Deployment
 
-Minimum required configuration:
+1. Put `Code.js` and `set_secret.js` in the Apps Script project.
+2. Delete the old LLM/sync/stock/manual files if this project is now receiver-only.
+3. Run `setupSecrets()` once after replacing the spreadsheet ID placeholder.
+4. Deploy as a Web App and keep the existing Tasker POST format.
 
-- `SHEET_ID`: the Google Sheet ID used for logs and monthly records.
-- `LLM_API_KEY`: your LLM API key.
-- `LLM_API_ENDPOINT`: an OpenAI-compatible chat completions endpoint.
-- `TELEGRAM_TOKEN`: bot token from BotFather.
-- `TELEGRAM_CHAT_ID`: the chat where confirmations should be sent.
-
-## Data Flow
-
-```mermaid
-graph TD
-    A[Payment app notification] --> B[Tasker profile]
-    B --> C[Google Apps Script doPost]
-    C --> D[Duplicate reservation]
-    D --> E[LLM classification]
-    E --> F[Logs sheet]
-    F --> G[Monthly sheet]
-    G --> H[Telegram confirmation]
-```
-
-## Dashboard Direction
-
-Google Sheets remains the source of truth. A separate dashboard can import/export the workbook or read published CSV ranges, then provide better charts for spending by month, category, merchant, payment method, and income versus expense.
+The receiver accepts timestamps in either Unix seconds or Unix milliseconds.
