@@ -24,19 +24,18 @@ function doPost(e) {
     }
 
     const receivedAt = formatDate(new Date());
-    const rows = notifications
-      .map(notification => toInboxRow(notification, receivedAt))
+    const records = notifications
+      .map(notification => toInboxRecord(notification, receivedAt))
       .filter(Boolean);
 
-    if (rows.length) {
-      appendRows(getOrCreateInboxSheet(), rows);
-    }
+    const result = queueNewRecords(records);
 
     return jsonResponse({
       ok: true,
       received: notifications.length,
-      queued: rows.length,
-      rejected: notifications.length - rows.length
+      queued: result.queued,
+      duplicates: result.duplicates,
+      rejected: notifications.length - records.length
     });
   } catch (error) {
     console.error(error);
@@ -44,7 +43,7 @@ function doPost(e) {
   }
 }
 
-function toInboxRow(notification, receivedAt) {
+function toInboxRecord(notification, receivedAt) {
   if (!notification || !notification.app || !notification.text || notification.timestamp == null) {
     return null;
   }
@@ -57,30 +56,92 @@ function toInboxRow(notification, receivedAt) {
     return null;
   }
 
-  return [
-    Utilities.getUuid(),
-    receivedAt,
-    formatDate(notificationDate),
-    String(notification.title || ''),
-    String(notification.text),
-    String(notification.app),
-    String(notification._id == null ? '' : notification._id),
-    'PENDING',
-    '',
-    '',
-    ''
-  ];
+  const app = String(notification.app);
+  const title = String(notification.title || '');
+  const text = String(notification.text);
+  const notificationId = String(notification._id == null ? '' : notification._id);
+  const eventId = makeEventId(app, notificationId, millis, title, text);
+
+  return {
+    eventId,
+    row: [
+      eventId,
+      receivedAt,
+      formatDate(notificationDate),
+      title,
+      text,
+      app,
+      notificationId,
+      'PENDING',
+      '',
+      '',
+      ''
+    ]
+  };
 }
 
-function appendRows(sheet, rows) {
+function queueNewRecords(records) {
+  if (!records.length) return { queued: 0, duplicates: 0 };
+
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
 
   try {
-    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, INBOX_HEADERS.length).setValues(rows);
+    const sheet = getOrCreateInboxSheet();
+    const seen = new Set();
+    const rows = [];
+    let duplicates = 0;
+
+    for (const record of records) {
+      // Covers the same notification appearing twice in one Tasker batch.
+      if (seen.has(record.eventId)) {
+        duplicates++;
+        continue;
+      }
+      seen.add(record.eventId);
+
+      // Covers Tasker retrying/reposting an event already persisted in Inbox.
+      if (eventExists(sheet, record.eventId)) {
+        duplicates++;
+        continue;
+      }
+
+      rows.push(record.row);
+    }
+
+    if (rows.length) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, INBOX_HEADERS.length).setValues(rows);
+    }
+
+    return { queued: rows.length, duplicates };
   } finally {
     lock.releaseLock();
   }
+}
+
+function eventExists(sheet, eventId) {
+  if (sheet.getLastRow() < 2) return false;
+
+  return sheet
+    .getRange(2, 1, sheet.getLastRow() - 1, 1)
+    .createTextFinder(eventId)
+    .matchEntireCell(true)
+    .findNext() !== null;
+}
+
+function makeEventId(app, notificationId, millis, title, text) {
+  const canonical = [app, notificationId, String(millis), title, text].join('\u001f');
+  const digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    canonical,
+    Utilities.Charset.UTF_8
+  );
+
+  const hex = digest
+    .map(byte => ((byte + 256) % 256).toString(16).padStart(2, '0'))
+    .join('');
+
+  return `evt_${hex}`;
 }
 
 function getOrCreateInboxSheet() {
